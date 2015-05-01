@@ -11,6 +11,7 @@ AuthNRequest class of OneLogin's Python Toolkit.
 
 from base64 import b64encode
 from zlib import compress
+from django.conf import settings
 
 from onelogin.saml2.utils import OneLogin_Saml2_Utils
 from onelogin.saml2.constants import OneLogin_Saml2_Constants
@@ -123,7 +124,9 @@ class OneLogin_Saml2_Authn_Request(object):
         :return: Unsigned AuthnRequest
         :rtype: str object
         """
-        deflated_request = compress(self.__authn_request)[2:-4]
+        deflated_request = self.__authn_request
+        if getattr(settings, 'ENABLE_SAML_COMPRESSION', True):
+            deflated_request = compress(self.__authn_request)[2:-4]
         return b64encode(deflated_request)
 
     def get_id(self):
