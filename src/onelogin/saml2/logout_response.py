@@ -9,10 +9,9 @@ Logout Response class of OneLogin's Python Toolkit.
 
 """
 
-from base64 import b64decode
+from base64 import b64encode, b64decode
 from defusedxml.lxml import fromstring
 
-from urllib import quote_plus
 from xml.dom.minidom import Document
 from defusedxml.minidom import parseString
 
@@ -78,10 +77,14 @@ class OneLogin_Saml2_Logout_Response(object):
         :rtype: boolean
         """
         self.__error = None
+        lowercase_urlencoding = False
         try:
             idp_data = self.__settings.get_idp_data()
             idp_entity_id = idp_data['entityId']
             get_data = request_data['get_data']
+
+            if 'lowercase_urlencoding' in request_data.keys():
+                lowercase_urlencoding = request_data['lowercase_urlencoding']
 
             if self.__settings.is_strict():
                 res = OneLogin_Saml2_Utils.validate_xml(self.document, 'saml-schema-protocol-2.0.xsd', self.__settings.is_debug_active())
@@ -90,7 +93,7 @@ class OneLogin_Saml2_Logout_Response(object):
 
                 security = self.__settings.get_security_data()
 
-                # Check if the InResponseTo of the Logout Response matchs the ID of the Logout Request (requestId) if provided
+                # Check if the InResponseTo of the Logout Response matches the ID of the Logout Request (requestId) if provided
                 if request_id is not None and self.document.documentElement.hasAttribute('InResponseTo'):
                     in_response_to = self.document.documentElement.getAttribute('InResponseTo')
                     if request_id != in_response_to:
@@ -120,19 +123,16 @@ class OneLogin_Saml2_Logout_Response(object):
                 else:
                     sign_alg = get_data['SigAlg']
 
-                if sign_alg != OneLogin_Saml2_Constants.RSA_SHA1:
-                    raise Exception('Invalid signAlg in the recieved Logout Response')
-
-                signed_query = 'SAMLResponse=%s' % quote_plus(get_data['SAMLResponse'])
+                signed_query = 'SAMLResponse=%s' % OneLogin_Saml2_Utils.get_encoded_parameter(get_data, 'SAMLResponse', lowercase_urlencoding=lowercase_urlencoding)
                 if 'RelayState' in get_data:
-                    signed_query = '%s&RelayState=%s' % (signed_query, quote_plus(get_data['RelayState']))
-                signed_query = '%s&SigAlg=%s' % (signed_query, quote_plus(sign_alg))
+                    signed_query = '%s&RelayState=%s' % (signed_query, OneLogin_Saml2_Utils.get_encoded_parameter(get_data, 'RelayState', lowercase_urlencoding=lowercase_urlencoding))
+                signed_query = '%s&SigAlg=%s' % (signed_query, OneLogin_Saml2_Utils.get_encoded_parameter(get_data, 'SigAlg', OneLogin_Saml2_Constants.RSA_SHA1, lowercase_urlencoding=lowercase_urlencoding))
 
                 if 'x509cert' not in idp_data or idp_data['x509cert'] is None:
                     raise Exception('In order to validate the sign on the Logout Response, the x509cert of the IdP is required')
                 cert = idp_data['x509cert']
 
-                if not OneLogin_Saml2_Utils.validate_binary_sign(signed_query, b64decode(get_data['Signature']), cert):
+                if not OneLogin_Saml2_Utils.validate_binary_sign(signed_query, b64decode(get_data['Signature']), cert, sign_alg):
                     raise Exception('Signature validation failed. Logout Response rejected')
 
             return True
@@ -191,16 +191,31 @@ class OneLogin_Saml2_Logout_Response(object):
 
         self.__logout_response = logout_response
 
-    def get_response(self):
+    def get_response(self, deflate=True):
         """
-        Returns a Logout Response object.
-        :return: Logout Response deflated and base64 encoded
+        Returns the Logout Response defated, base64encoded
+        :param deflate: It makes the deflate process optional
+        :type: bool
+        :return: Logout Response maybe deflated and base64 encoded
         :rtype: string
         """
-        return OneLogin_Saml2_Utils.deflate_and_base64_encode(self.__logout_response)
+        if deflate:
+            response = OneLogin_Saml2_Utils.deflate_and_base64_encode(self.__logout_response)
+        else:
+            response = b64encode(self.__logout_response)
+        return response
+
+    def get_xml(self):
+        """
+        Returns the XML that will be sent as part of the response
+        or that was received at the SP
+        :return: XML response body
+        :rtype: string
+        """
+        return self.__logout_response
 
     def get_error(self):
         """
-        After execute a validation process, if fails this method returns the cause
+        After executing a validation process, if it fails this method returns the cause
         """
         return self.__error

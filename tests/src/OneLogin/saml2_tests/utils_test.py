@@ -8,6 +8,8 @@ import json
 from lxml import etree
 from os.path import dirname, join, exists
 import unittest
+from teamcity import is_running_under_teamcity
+from teamcity.unittestpy import TeamcityTestRunner
 from xml.dom.minidom import Document, parseString
 
 from onelogin.saml2.constants import OneLogin_Saml2_Constants
@@ -16,13 +18,13 @@ from onelogin.saml2.utils import OneLogin_Saml2_Utils
 
 
 class OneLogin_Saml2_Utils_Test(unittest.TestCase):
-    data_path = join(dirname(__file__), '..', '..', '..', 'data')
+    data_path = join(dirname(dirname(dirname(dirname(__file__)))), 'data')
 
     def loadSettingsJSON(self, filename=None):
         if filename:
-            filename = join(dirname(__file__), '..', '..', '..', 'settings', filename)
+            filename = join(dirname(dirname(dirname(dirname(__file__)))), 'settings', filename)
         else:
-            filename = join(dirname(__file__), '..', '..', '..', 'settings', 'settings1.json')
+            filename = join(dirname(dirname(dirname(dirname(__file__)))), 'settings', 'settings1.json')
         if exists(filename):
             stream = open(filename, 'r')
             settings = json.load(stream)
@@ -36,6 +38,18 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
         content = f.read()
         f.close()
         return content
+
+    def testDeflateBase64Roundtrip(self):
+        """
+        Tests deflate_and_base64_encode and decode_base64_and_inflate methods of OneLogin_Saml2_Utils
+        """
+        body = 'Some random string.'
+        encoded = OneLogin_Saml2_Utils.deflate_and_base64_encode(body)
+        self.assertEqual(OneLogin_Saml2_Utils.decode_base64_and_inflate(encoded), body)
+
+        unicode_body = u'Sömé rändöm nön-äsçïï strïng.'
+        unicode_encoded = OneLogin_Saml2_Utils.deflate_and_base64_encode(unicode_body)
+        self.assertEqual(OneLogin_Saml2_Utils.decode_base64_and_inflate(unicode_encoded), unicode_body)
 
     def testValidateXML(self):
         """
@@ -424,7 +438,7 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
             status_inv = OneLogin_Saml2_Utils.get_status(dom_inv)
             self.assertEqual(status_inv, 42)
         except Exception as e:
-            self.assertEqual('Missing Status on response', e.message)
+            self.assertEqual('Missing valid Status on response', e.message)
 
         xml_inv2 = self.file_contents(join(self.data_path, 'responses', 'invalids', 'no_status_code.xml.base64'))
         xml_inv2 = b64decode(xml_inv2)
@@ -434,7 +448,7 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
             status_inv2 = OneLogin_Saml2_Utils.get_status(dom_inv2)
             self.assertEqual(status_inv2, 42)
         except Exception as e:
-            self.assertEqual('Missing Status Code on response', e.message)
+            self.assertEqual('Missing valid Status Code on response', e.message)
 
     def testParseDuration(self):
         """
@@ -557,16 +571,53 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
         signature_nodes_5 = OneLogin_Saml2_Utils.query(dom, './/ds:SignatureValue', assertion)
         self.assertEqual(1, len(signature_nodes_5))
 
-    def testGenerateNameId(self):
+    def _generate_name_id_element(self, name_qualifier):
+        name_id_value = 'value'
+        entity_id = 'sp-entity-id'
+        name_id_format = 'name-id-format'
+
+        raw_name_id = OneLogin_Saml2_Utils.generate_name_id(
+            name_id_value,
+            entity_id,
+            name_id_format,
+            nq=name_qualifier,
+        )
+        parser = etree.XMLParser(recover=True)
+        return etree.fromstring(raw_name_id, parser)
+
+    def testNameidGenerationIncludesNameQualifierAttribute(self):
+        """
+        Tests the inclusion of NameQualifier in the generateNameId method of the OneLogin_Saml2_Utils
+        """
+        idp_name_qualifier = 'idp-name-qualifier'
+        idp_name_qualifier_attribute = ('NameQualifier', idp_name_qualifier)
+
+        name_id = self._generate_name_id_element(idp_name_qualifier)
+
+        self.assertIn(idp_name_qualifier_attribute, name_id.attrib.items())
+
+    def testNameidGenerationDoesNotIncludeNameQualifierAttribute(self):
+        """
+        Tests the (not) inclusion of NameQualifier in the generateNameId method of the OneLogin_Saml2_Utils
+        """
+        idp_name_qualifier = None
+        not_expected_attribute = 'NameQualifier'
+
+        name_id = self._generate_name_id_element(idp_name_qualifier)
+
+        self.assertNotIn(not_expected_attribute, name_id.attrib.keys())
+
+    def testGenerateNameIdWithSPNameQualifier(self):
         """
         Tests the generateNameId method of the OneLogin_Saml2_Utils
+        Adding a SPNameQualifier
         """
         name_id_value = 'ONELOGIN_ce998811003f4e60f8b07a311dc641621379cfde'
         entity_id = 'http://stuff.com/endpoints/metadata.php'
-        name_id_format = 'urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified'
+        name_id_format = 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified'
 
         name_id = OneLogin_Saml2_Utils.generate_name_id(name_id_value, entity_id, name_id_format)
-        expected_name_id = '<saml:NameID Format="urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified" SPNameQualifier="http://stuff.com/endpoints/metadata.php">ONELOGIN_ce998811003f4e60f8b07a311dc641621379cfde</saml:NameID>'
+        expected_name_id = '<saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified" SPNameQualifier="http://stuff.com/endpoints/metadata.php">ONELOGIN_ce998811003f4e60f8b07a311dc641621379cfde</saml:NameID>'
         self.assertEqual(name_id, expected_name_id)
 
         settings_info = self.loadSettingsJSON()
@@ -574,6 +625,25 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
         key = OneLogin_Saml2_Utils.format_cert(x509cert)
 
         name_id_enc = OneLogin_Saml2_Utils.generate_name_id(name_id_value, entity_id, name_id_format, key)
+        expected_name_id_enc = '<saml:EncryptedID><xenc:EncryptedData Type="http://www.w3.org/2001/04/xmlenc#Element" xmlns:dsig="http://www.w3.org/2000/09/xmldsig#" xmlns:xenc="http://www.w3.org/2001/04/xmlenc#"><xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/><dsig:KeyInfo xmlns:dsig="http://www.w3.org/2000/09/xmldsig#"><xenc:EncryptedKey><xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p"/><xenc:CipherData><xenc:CipherValue>'
+        self.assertIn(expected_name_id_enc, name_id_enc)
+
+    def testGenerateNameIdWithoutSPNameQualifier(self):
+        """
+        Tests the generateNameId method of the OneLogin_Saml2_Utils
+        """
+        name_id_value = 'ONELOGIN_ce998811003f4e60f8b07a311dc641621379cfde'
+        name_id_format = 'urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified'
+
+        name_id = OneLogin_Saml2_Utils.generate_name_id(name_id_value, None, name_id_format)
+        expected_name_id = '<saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified">ONELOGIN_ce998811003f4e60f8b07a311dc641621379cfde</saml:NameID>'
+        self.assertEqual(name_id, expected_name_id)
+
+        settings_info = self.loadSettingsJSON()
+        x509cert = settings_info['idp']['x509cert']
+        key = OneLogin_Saml2_Utils.format_cert(x509cert)
+
+        name_id_enc = OneLogin_Saml2_Utils.generate_name_id(name_id_value, None, name_id_format, key)
         expected_name_id_enc = '<saml:EncryptedID><xenc:EncryptedData Type="http://www.w3.org/2001/04/xmlenc#Element" xmlns:dsig="http://www.w3.org/2000/09/xmldsig#" xmlns:xenc="http://www.w3.org/2001/04/xmlenc#"><xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#aes128-cbc"/><dsig:KeyInfo xmlns:dsig="http://www.w3.org/2000/09/xmldsig#"><xenc:EncryptedKey><xenc:EncryptionMethod Algorithm="http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p"/><xenc:CipherData><xenc:CipherValue>'
         self.assertIn(expected_name_id_enc, name_id_enc)
 
@@ -642,11 +712,11 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
         encrypted_data = encrypted_nameid_nodes[0].firstChild
         encrypted_data_str = str(encrypted_nameid_nodes[0].firstChild.toxml())
         decrypted_nameid = OneLogin_Saml2_Utils.decrypt_element(encrypted_data, key)
-        self.assertEqual('{%s}NameID' % (OneLogin_Saml2_Constants.NS_SAML), decrypted_nameid.tag)
+        self.assertIn('NameID', decrypted_nameid.tag)
         self.assertEqual('2de11defd199f8d5bb63f9b7deb265ba5c675c10', decrypted_nameid.text)
 
         decrypted_nameid = OneLogin_Saml2_Utils.decrypt_element(encrypted_data_str, key)
-        self.assertEqual('{%s}NameID' % (OneLogin_Saml2_Constants.NS_SAML), decrypted_nameid.tag)
+        self.assertIn('NameID', decrypted_nameid.tag)
         self.assertEqual('2de11defd199f8d5bb63f9b7deb265ba5c675c10', decrypted_nameid.text)
 
         xml_assertion_enc = b64decode(self.file_contents(join(self.data_path, 'responses', 'valid_encrypted_assertion_encrypted_nameid.xml.base64')))
@@ -662,7 +732,7 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
         encrypted_nameid_nodes = decrypted_assertion.xpath('/saml:Assertion/saml:Subject/saml:EncryptedID', namespaces=OneLogin_Saml2_Constants.NSMAP)
         encrypted_data = encrypted_nameid_nodes[0][0]
         decrypted_nameid = OneLogin_Saml2_Utils.decrypt_element(encrypted_data, key)
-        self.assertEqual('{%s}NameID' % (OneLogin_Saml2_Constants.NS_SAML), decrypted_nameid.tag)
+        self.assertIn('{%s}NameID' % (OneLogin_Saml2_Constants.NS_SAML), decrypted_nameid.tag)
         self.assertEqual('457bdb600de717891c77647b0806ce59c089d5b8', decrypted_nameid.text)
 
         key_2_file_name = join(self.data_path, 'misc', 'sp2.key')
@@ -673,18 +743,18 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
         try:
             OneLogin_Saml2_Utils.decrypt_element(encrypted_data, key2)
             self.assertTrue(False)
-        except:
-            pass
+        except Exception as e:
+            self.assertEqual('failed to decrypt', e[0])
 
-        key_3_file_name = join(self.data_path, 'misc', 'sp2.key')
+        key_3_file_name = join(self.data_path, 'misc', 'sp3.key')
         f = open(key_3_file_name, 'r')
         key3 = f.read()
         f.close()
         try:
             OneLogin_Saml2_Utils.decrypt_element(encrypted_data, key3)
             self.assertTrue(False)
-        except:
-            pass
+        except Exception as e:
+            self.assertEqual('failed to decrypt', e[0])
 
         xml_nameid_enc_2 = b64decode(self.file_contents(join(self.data_path, 'responses', 'invalids', 'encrypted_nameID_without_EncMethod.xml.base64')))
         dom_nameid_enc_2 = parseString(xml_nameid_enc_2)
@@ -800,13 +870,13 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
 
         # expired cert
         xml_metadata_signed = self.file_contents(join(self.data_path, 'metadata', 'signed_metadata_settings1.xml'))
-        self.assertTrue(OneLogin_Saml2_Utils.validate_sign(xml_metadata_signed, cert))
+        self.assertTrue(OneLogin_Saml2_Utils.validate_metadata_sign(xml_metadata_signed, cert))
         # expired cert, verified it
-        self.assertFalse(OneLogin_Saml2_Utils.validate_sign(xml_metadata_signed, cert, validatecert=True))
+        self.assertFalse(OneLogin_Saml2_Utils.validate_metadata_sign(xml_metadata_signed, cert, validatecert=True))
 
         xml_metadata_signed_2 = self.file_contents(join(self.data_path, 'metadata', 'signed_metadata_settings2.xml'))
-        self.assertTrue(OneLogin_Saml2_Utils.validate_sign(xml_metadata_signed_2, cert_2))
-        self.assertTrue(OneLogin_Saml2_Utils.validate_sign(xml_metadata_signed_2, None, fingerprint_2))
+        self.assertTrue(OneLogin_Saml2_Utils.validate_metadata_sign(xml_metadata_signed_2, cert_2))
+        self.assertTrue(OneLogin_Saml2_Utils.validate_metadata_sign(xml_metadata_signed_2, None, fingerprint_2))
 
         xml_response_msg_signed = b64decode(self.file_contents(join(self.data_path, 'responses', 'signed_message_response.xml.base64')))
 
@@ -862,7 +932,7 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
 
         invalid_fingerprint = 'afe71c34ef740bc87434be13a2263d31271da1f9'
         # Wrong fingerprint
-        self.assertFalse(OneLogin_Saml2_Utils.validate_sign(xml_metadata_signed_2, None, invalid_fingerprint))
+        self.assertFalse(OneLogin_Saml2_Utils.validate_metadata_sign(xml_metadata_signed_2, None, invalid_fingerprint))
 
         dom_2 = parseString(xml_response_double_signed_2)
         self.assertTrue(OneLogin_Saml2_Utils.validate_sign(dom_2, cert_2))
@@ -870,12 +940,26 @@ class OneLogin_Saml2_Utils_Test(unittest.TestCase):
         # Modified message
         self.assertFalse(OneLogin_Saml2_Utils.validate_sign(dom_2, cert_2))
 
+        # Try to validate directly the Assertion
         dom_3 = parseString(xml_response_double_signed_2)
         assert_elem_3 = dom_3.firstChild.firstChild.nextSibling.nextSibling.nextSibling
-        self.assertTrue(OneLogin_Saml2_Utils.validate_sign(assert_elem_3, cert_2))
+        self.assertFalse(OneLogin_Saml2_Utils.validate_sign(assert_elem_3, cert_2))
 
+        # Wrong scheme
         no_signed = b64decode(self.file_contents(join(self.data_path, 'responses', 'invalids', 'no_signature.xml.base64')))
         self.assertFalse(OneLogin_Saml2_Utils.validate_sign(no_signed, cert))
 
         no_key = b64decode(self.file_contents(join(self.data_path, 'responses', 'invalids', 'no_key.xml.base64')))
         self.assertFalse(OneLogin_Saml2_Utils.validate_sign(no_key, cert))
+
+        # Signature Wrapping attack
+        wrapping_attack1 = b64decode(self.file_contents(join(self.data_path, 'responses', 'invalids', 'signature_wrapping_attack.xml.base64')))
+        self.assertFalse(OneLogin_Saml2_Utils.validate_sign(wrapping_attack1, cert))
+
+
+if __name__ == '__main__':
+    if is_running_under_teamcity():
+        runner = TeamcityTestRunner()
+    else:
+        runner = unittest.TextTestRunner()
+    unittest.main(testRunner=runner)

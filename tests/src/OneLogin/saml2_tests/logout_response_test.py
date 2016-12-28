@@ -6,6 +6,8 @@
 import json
 from os.path import dirname, join, exists
 import unittest
+from teamcity import is_running_under_teamcity
+from teamcity.unittestpy import TeamcityTestRunner
 from urlparse import urlparse, parse_qs
 from xml.dom.minidom import parseString
 
@@ -16,10 +18,11 @@ from onelogin.saml2.utils import OneLogin_Saml2_Utils
 
 
 class OneLogin_Saml2_Logout_Response_Test(unittest.TestCase):
-    data_path = join(dirname(__file__), '..', '..', '..', 'data')
+    data_path = join(dirname(dirname(dirname(dirname(__file__)))), 'data')
+    settings_path = join(dirname(dirname(dirname(dirname(__file__)))), 'settings')
 
     def loadSettingsJSON(self):
-        filename = join(dirname(__file__), '..', '..', '..', 'settings', 'settings1.json')
+        filename = join(self.settings_path, 'settings1.json')
         if exists(filename):
             stream = open(filename, 'r')
             settings = json.load(stream)
@@ -381,3 +384,36 @@ class OneLogin_Saml2_Logout_Response_Test(unittest.TestCase):
 
         response_3 = OneLogin_Saml2_Logout_Response(settings, message_3)
         self.assertTrue(response_3.is_valid(request_data))
+
+    def testGetXML(self):
+        """
+        Tests that we can get the logout response XML directly without
+        going through intermediate steps
+        """
+        response = self.file_contents(join(self.data_path, 'logout_responses', 'logout_response.xml'))
+        settings = OneLogin_Saml2_Settings(self.loadSettingsJSON())
+
+        logout_response_generated = OneLogin_Saml2_Logout_Response(settings)
+        logout_response_generated.build("InResponseValue")
+
+        expectedFragment = (
+            'Destination="http://idp.example.com/SingleLogoutService.php"\n'
+            '                      InResponseTo="InResponseValue"\n>\n'
+            '    <saml:Issuer>http://stuff.com/endpoints/metadata.php</saml:Issuer>\n'
+            '    <samlp:Status>\n'
+            '        <samlp:StatusCode Value="urn:oasis:names:tc:SAML:2.0:status:Success" />\n'
+            '    </samlp:Status>\n'
+            '</samlp:LogoutResponse>'
+        )
+        self.assertIn(expectedFragment, logout_response_generated.get_xml())
+
+        logout_response_processed = OneLogin_Saml2_Logout_Response(settings, OneLogin_Saml2_Utils.deflate_and_base64_encode(response))
+        self.assertEqual(response, logout_response_processed.get_xml())
+
+
+if __name__ == '__main__':
+    if is_running_under_teamcity():
+        runner = TeamcityTestRunner()
+    else:
+        runner = unittest.TextTestRunner()
+    unittest.main(testRunner=runner)

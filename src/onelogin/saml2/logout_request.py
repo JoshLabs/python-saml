@@ -10,10 +10,9 @@ Logout Request class of OneLogin's Python Toolkit.
 """
 
 from zlib import decompress
-from base64 import b64decode
+from base64 import b64encode, b64decode
 from lxml import etree
 from defusedxml.lxml import fromstring
-from urllib import quote_plus
 from xml.dom.minidom import Document
 
 from onelogin.saml2.constants import OneLogin_Saml2_Constants
@@ -29,7 +28,7 @@ class OneLogin_Saml2_Logout_Request(object):
 
     """
 
-    def __init__(self, settings, request=None, name_id=None, session_index=None):
+    def __init__(self, settings, request=None, name_id=None, session_index=None, nq=None):
         """
         Constructs the Logout Request object.
 
@@ -44,6 +43,9 @@ class OneLogin_Saml2_Logout_Request(object):
 
         :param session_index: SessionIndex that identifies the session of the user.
         :type session_index: string
+
+        :param nq: IDP Name Qualifier
+        :type: string
         """
         self.__settings = settings
         self.__error = None
@@ -65,13 +67,15 @@ class OneLogin_Saml2_Logout_Request(object):
 
             if name_id is not None:
                 nameIdFormat = sp_data['NameIDFormat']
+                spNameQualifier = None
             else:
                 name_id = idp_data['entityId']
                 nameIdFormat = OneLogin_Saml2_Constants.NAMEID_ENTITY
+                spNameQualifier = sp_data['entityId']
 
             name_id_obj = OneLogin_Saml2_Utils.generate_name_id(
                 name_id,
-                sp_data['entityId'],
+                spNameQualifier,
                 nameIdFormat,
                 cert
             )
@@ -112,13 +116,28 @@ class OneLogin_Saml2_Logout_Request(object):
 
         self.__logout_request = logout_request
 
-    def get_request(self):
+    def get_request(self, deflate=True):
         """
-        Returns the Logout Request defated, base64encoded
-        :return: Deflated base64 encoded Logout Request
+        Returns the Logout Request deflated, base64encoded
+        :param deflate: It makes the deflate process optional
+        :type: bool
+        :return: Logout Request maybe deflated and base64 encoded
         :rtype: str object
         """
-        return OneLogin_Saml2_Utils.deflate_and_base64_encode(self.__logout_request)
+        if deflate:
+            request = OneLogin_Saml2_Utils.deflate_and_base64_encode(self.__logout_request)
+        else:
+            request = b64encode(self.__logout_request)
+        return request
+
+    def get_xml(self):
+        """
+        Returns the XML that will be sent as part of the request
+        or that was received at the SP
+        :return: XML request body
+        :rtype: string
+        """
+        return self.__logout_request
 
     @staticmethod
     def get_id(request):
@@ -243,7 +262,7 @@ class OneLogin_Saml2_Logout_Request(object):
 
     def is_valid(self, request_data):
         """
-        Checks if the Logout Request recieved is valid
+        Checks if the Logout Request received is valid
         :param request_data: Request Data
         :type request_data: dict
 
@@ -251,6 +270,7 @@ class OneLogin_Saml2_Logout_Request(object):
         :rtype: boolean
         """
         self.__error = None
+        lowercase_urlencoding = False
         try:
             dom = fromstring(self.__logout_request)
 
@@ -261,6 +281,9 @@ class OneLogin_Saml2_Logout_Request(object):
                 get_data = request_data['get_data']
             else:
                 get_data = {}
+
+            if 'lowercase_urlencoding' in request_data.keys():
+                lowercase_urlencoding = request_data['lowercase_urlencoding']
 
             if self.__settings.is_strict():
                 res = OneLogin_Saml2_Utils.validate_xml(dom, 'saml-schema-protocol-2.0.xsd', self.__settings.is_debug_active())
@@ -306,24 +329,21 @@ class OneLogin_Saml2_Logout_Request(object):
                 else:
                     sign_alg = get_data['SigAlg']
 
-                if sign_alg != OneLogin_Saml2_Constants.RSA_SHA1:
-                    raise Exception('Invalid signAlg in the recieved Logout Request')
-
-                signed_query = 'SAMLRequest=%s' % quote_plus(get_data['SAMLRequest'])
+                signed_query = 'SAMLRequest=%s' % OneLogin_Saml2_Utils.get_encoded_parameter(get_data, 'SAMLRequest', lowercase_urlencoding=lowercase_urlencoding)
                 if 'RelayState' in get_data:
-                    signed_query = '%s&RelayState=%s' % (signed_query, quote_plus(get_data['RelayState']))
-                signed_query = '%s&SigAlg=%s' % (signed_query, quote_plus(sign_alg))
+                    signed_query = '%s&RelayState=%s' % (signed_query, OneLogin_Saml2_Utils.get_encoded_parameter(get_data, 'RelayState', lowercase_urlencoding=lowercase_urlencoding))
+                signed_query = '%s&SigAlg=%s' % (signed_query, OneLogin_Saml2_Utils.get_encoded_parameter(get_data, 'SigAlg', OneLogin_Saml2_Constants.RSA_SHA1, lowercase_urlencoding=lowercase_urlencoding))
 
                 if 'x509cert' not in idp_data or idp_data['x509cert'] is None:
                     raise Exception('In order to validate the sign on the Logout Request, the x509cert of the IdP is required')
                 cert = idp_data['x509cert']
 
-                if not OneLogin_Saml2_Utils.validate_binary_sign(signed_query, b64decode(get_data['Signature']), cert):
+                if not OneLogin_Saml2_Utils.validate_binary_sign(signed_query, b64decode(get_data['Signature']), cert, sign_alg):
                     raise Exception('Signature validation failed. Logout Request rejected')
 
             return True
         except Exception as err:
-            # pylint: disable=R0801
+            # pylint: disable=R0801sign_alg
             self.__error = err.__str__()
             debug = self.__settings.is_debug_active()
             if debug:
@@ -332,6 +352,6 @@ class OneLogin_Saml2_Logout_Request(object):
 
     def get_error(self):
         """
-        After execute a validation process, if fails this method returns the cause
+        After executing a validation process, if it fails this method returns the cause
         """
         return self.__error

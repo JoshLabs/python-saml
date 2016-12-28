@@ -6,17 +6,20 @@
 import json
 from os.path import dirname, join, exists, sep
 import unittest
+from teamcity import is_running_under_teamcity
+from teamcity.unittestpy import TeamcityTestRunner
 
+from onelogin.saml2.errors import OneLogin_Saml2_Error
 from onelogin.saml2.settings import OneLogin_Saml2_Settings
 from onelogin.saml2.utils import OneLogin_Saml2_Utils
 
 
 class OneLogin_Saml2_Settings_Test(unittest.TestCase):
-    data_path = join(dirname(__file__), '..', '..', '..', 'data')
-    settings_path = join(dirname(__file__), '..', '..', '..', 'settings')
+    data_path = join(dirname(dirname(dirname(dirname(__file__)))), 'data')
+    settings_path = join(dirname(dirname(dirname(dirname(__file__)))), 'settings')
 
-    def loadSettingsJSON(self):
-        filename = join(self.settings_path, 'settings1.json')
+    def loadSettingsJSON(self, name='settings1.json'):
+        filename = join(self.settings_path, name)
         if exists(filename):
             stream = open(filename, 'r')
             settings = json.load(stream)
@@ -118,7 +121,7 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         Tests the OneLogin_Saml2_Settings Constructor.
         Case load setting from file
         """
-        custom_base_path = join(dirname(__file__), '..', '..', '..', 'settings')
+        custom_base_path = join(dirname(dirname(dirname(dirname(__file__)))), 'settings')
         settings = OneLogin_Saml2_Settings(custom_base_path=custom_base_path)
         self.assertEqual(len(settings.get_errors()), 0)
 
@@ -128,7 +131,7 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         except Exception as e:
             self.assertIn('Settings file not found', e.message)
 
-        custom_base_path = join(dirname(__file__), '..', '..', '..', 'data', 'customPath')
+        custom_base_path = join(dirname(dirname(dirname(dirname(__file__)))), 'data', 'customPath')
         settings_3 = OneLogin_Saml2_Settings(custom_base_path=custom_base_path)
         self.assertEqual(len(settings_3.get_errors()), 0)
 
@@ -295,6 +298,38 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
             self.assertIn('sp_entityId_not_found', e.message)
             self.assertIn('sp_acs_not_found', e.message)
 
+        # AttributeConsumingService tests
+        # serviceName, requestedAttributes are required
+        settings_info['sp']['attributeConsumingService'] = {
+            "serviceDescription": "Test Service"
+        }
+        try:
+            OneLogin_Saml2_Settings(settings_info)
+            self.assertTrue(False)
+        except Exception as e:
+            self.assertIn('sp_attributeConsumingService_serviceName_not_found', e.message)
+            self.assertIn('sp_attributeConsumingService_requestedAttributes_not_found', e.message)
+
+        # requestedAttributes/name is required
+        settings_info['sp']['attributeConsumingService'] = {
+            "serviceName": {},
+            "serviceDescription": ["Test Service"],
+            "requestedAttributes": [{
+                "nameFormat": "urn:oasis:names:tc:SAML:2.0:attrname-format:uri",
+                "friendlyName": "givenName",
+                "isRequired": "False"
+            }
+            ]
+        }
+        try:
+            OneLogin_Saml2_Settings(settings_info)
+            self.assertTrue(False)
+        except Exception as e:
+            self.assertIn('sp_attributeConsumingService_requestedAttributes_name_not_found', e.message)
+            self.assertIn('sp_attributeConsumingService_requestedAttributes_isRequired_type_invalid', e.message)
+            self.assertIn('sp_attributeConsumingService_serviceDescription_type_invalid', e.message)
+            self.assertIn('sp_attributeConsumingService_serviceName_type_invalid', e.message)
+
         settings_info['idp']['entityID'] = 'entityId'
         settings_info['idp']['singleSignOnService'] = {}
         settings_info['idp']['singleSignOnService']['url'] = 'invalid_value'
@@ -360,7 +395,21 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         self.assertIn('WantAssertionsSigned="false"', metadata)
         self.assertIn('<md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="http://stuff.com/endpoints/endpoints/acs.php" index="1"/>', metadata)
         self.assertIn('<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="http://stuff.com/endpoints/endpoints/sls.php"/>', metadata)
-        self.assertIn('<md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified</md:NameIDFormat>', metadata)
+        self.assertIn('<md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</md:NameIDFormat>', metadata)
+
+    def testGetUnicodeSPMetadata(self):
+        """
+        Tests the getSPMetadata method of the OneLogin_Saml2_Settings
+        Case unicode metadata
+        """
+        settings = OneLogin_Saml2_Settings(self.loadSettingsJSON('settings6.json'))
+        metadata = settings.get_sp_metadata()
+
+        self.assertIn('<md:SPSSODescriptor', metadata)
+        self.assertIn('<md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="http://stuff.com/endpoints/endpoints/acs.php" index="1"/>', metadata)
+        self.assertIn(u'<md:OrganizationDisplayName xml:lang="en-US">Sérvïçé prövïdér</md:OrganizationDisplayName>', metadata)
+        self.assertIn(u'<md:GivenName>Téçhnïçäl Nämé</md:GivenName>', metadata)
+        self.assertIn(u'<md:GivenName>Süppört Nämé</md:GivenName>', metadata)
 
     def testGetSPMetadataSigned(self):
         """
@@ -370,9 +419,44 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         settings_info = self.loadSettingsJSON()
         if 'security' not in settings_info:
             settings_info['security'] = {}
-        settings_info['security']['signMetadata'] = True
-        settings = OneLogin_Saml2_Settings(settings_info)
 
+        # Use custom cert/key
+        settings_info['security']['signMetadata'] = {
+            "keyFileName": "sp.key",
+            "certFileName": "sp.crt"
+        }
+        self.generateAndCheckMetadata(settings_info)
+
+        # Default cert/key
+        settings_info['security']['signMetadata'] = True
+        self.generateAndCheckMetadata(settings_info)
+
+        # Now try again with SP keys set directly from files that no exists:
+        settings_info['custom_base_path'] = '../path/not/exists/'
+        with self.assertRaises(OneLogin_Saml2_Error):
+            OneLogin_Saml2_Settings(settings_info).get_sp_metadata()
+
+        # Now try again with SP keys set directly in settings and not from files:
+        del settings_info['custom_base_path']
+        # Now the keys should not be found, so metadata generation won't work:
+        with self.assertRaises(OneLogin_Saml2_Error):
+            OneLogin_Saml2_Settings(settings_info).get_sp_metadata()
+        # Set the keys in the settings:
+        settings_info['sp']['x509cert'] = self.file_contents(join(self.data_path, 'customPath', 'certs', 'sp.crt'))
+        settings_info['sp']['privateKey'] = self.file_contents(join(self.data_path, 'customPath', 'certs', 'sp.key'))
+        self.generateAndCheckMetadata(settings_info)
+
+        # Now fails due no privateKey
+        del settings_info['sp']['privateKey']
+        with self.assertRaises(OneLogin_Saml2_Error):
+            OneLogin_Saml2_Settings(settings_info).get_sp_metadata()
+
+    def generateAndCheckMetadata(self, settings):
+        """
+        Helper method: Given some settings, generate metadata and validate it
+        """
+        if not isinstance(settings, OneLogin_Saml2_Settings):
+            settings = OneLogin_Saml2_Settings(settings)
         metadata = settings.get_sp_metadata()
         self.assertIn('<md:SPSSODescriptor', metadata)
         self.assertIn('entityID="http://stuff.com/endpoints/metadata.php"', metadata)
@@ -380,11 +464,12 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         self.assertIn('WantAssertionsSigned="false"', metadata)
         self.assertIn('<md:AssertionConsumerService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="http://stuff.com/endpoints/endpoints/acs.php" index="1"/>', metadata)
         self.assertIn('<md:SingleLogoutService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="http://stuff.com/endpoints/endpoints/sls.php"/>', metadata)
-        self.assertIn('<md:NameIDFormat>urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified</md:NameIDFormat>', metadata)
+        self.assertIn('<md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified</md:NameIDFormat>', metadata)
         self.assertIn('<ds:SignedInfo><ds:CanonicalizationMethod Algorithm="http://www.w3.org/2001/10/xml-exc-c14n#"/>', metadata)
         self.assertIn('<ds:SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/>', metadata)
         self.assertIn('<ds:Reference', metadata)
         self.assertIn('<ds:KeyInfo><ds:X509Data><ds:X509Certificate>', metadata)
+        return metadata
 
     def testGetSPMetadataSignedNoMetadataCert(self):
         """
@@ -411,7 +496,7 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
             settings.get_sp_metadata()
             self.assertTrue(False)
         except Exception as e:
-            self.assertIn('Private key file not found', e.message)
+            self.assertIn('Private key file not readable', e.message)
 
         settings_info['security']['signMetadata'] = {
             'keyFileName': 'sp.key',
@@ -422,7 +507,7 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
             settings.get_sp_metadata()
             self.assertTrue(False)
         except Exception as e:
-            self.assertIn('Public cert file not found', e.message)
+            self.assertIn('Public cert file not readable', e.message)
 
         settings_info['security']['signMetadata'] = 'invalid_value'
         settings = OneLogin_Saml2_Settings(settings_info)
@@ -533,7 +618,7 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         self.assertEqual('http://stuff.com/endpoints/metadata.php', sp_data['entityId'])
         self.assertEqual('http://stuff.com/endpoints/endpoints/acs.php', sp_data['assertionConsumerService']['url'])
         self.assertEqual('http://stuff.com/endpoints/endpoints/sls.php', sp_data['singleLogoutService']['url'])
-        self.assertEqual('urn:oasis:names:tc:SAML:2.0:nameid-format:unspecified', sp_data['NameIDFormat'])
+        self.assertEqual('urn:oasis:names:tc:SAML:1.1:nameid-format:unspecified', sp_data['NameIDFormat'])
 
     def testGetSecurityData(self):
         """
@@ -550,7 +635,48 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         self.assertIn('signMetadata', security)
         self.assertIn('wantMessagesSigned', security)
         self.assertIn('wantAssertionsSigned', security)
+        self.assertIn('requestedAuthnContext', security)
+        self.assertIn('wantNameId', security)
         self.assertIn('wantNameIdEncrypted', security)
+
+    def testGetDefaultSecurityValues(self):
+        """
+        Tests default values of Security advanced sesettings
+        """
+        settings_json = self.loadSettingsJSON()
+        del settings_json['security']
+        settings = OneLogin_Saml2_Settings(settings_json)
+        security = settings.get_security_data()
+
+        self.assertIn('nameIdEncrypted', security)
+        self.assertFalse(security.get('nameIdEncrypted'))
+
+        self.assertIn('authnRequestsSigned', security)
+        self.assertFalse(security.get('authnRequestsSigned'))
+
+        self.assertIn('logoutRequestSigned', security)
+        self.assertFalse(security.get('logoutRequestSigned'))
+
+        self.assertIn('logoutResponseSigned', security)
+        self.assertFalse(security.get('logoutResponseSigned'))
+
+        self.assertIn('signMetadata', security)
+        self.assertFalse(security.get('signMetadata'))
+
+        self.assertIn('wantMessagesSigned', security)
+        self.assertFalse(security.get('wantMessagesSigned'))
+
+        self.assertIn('wantAssertionsSigned', security)
+        self.assertFalse(security.get('wantAssertionsSigned'))
+
+        self.assertIn('requestedAuthnContext', security)
+        self.assertTrue(security.get('requestedAuthnContext'))
+
+        self.assertIn('wantNameId', security)
+        self.assertTrue(security.get('wantNameId'))
+
+        self.assertIn('wantNameIdEncrypted', security)
+        self.assertFalse(security.get('wantNameIdEncrypted'))
 
     def testGetContacts(self):
         """
@@ -632,3 +758,11 @@ class OneLogin_Saml2_Settings_Test(unittest.TestCase):
         settings_info['debug'] = True
         settings_3 = OneLogin_Saml2_Settings(settings_info)
         self.assertTrue(settings_3.is_debug_active())
+
+
+if __name__ == '__main__':
+    if is_running_under_teamcity():
+        runner = TeamcityTestRunner()
+    else:
+        runner = unittest.TextTestRunner()
+    unittest.main(testRunner=runner)

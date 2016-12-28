@@ -28,7 +28,10 @@ def prepare_flask_request(request):
         'server_port': url_data.port,
         'script_name': request.path,
         'get_data': request.args.copy(),
-        'post_data': request.form.copy()
+        'post_data': request.form.copy(),
+        # Uncomment if using ADFS as IdP, https://github.com/onelogin/python-saml/pull/144
+        # 'lowercase_urlencoding': True,
+        'query_string': request.query_string
     }
 
 
@@ -118,7 +121,7 @@ def metadata():
         resp = make_response(metadata, 200)
         resp.headers['Content-Type'] = 'text/xml'
     else:
-        resp = make_response(errors.join(', '), 500)
+        resp = make_response(', '.join(errors), 500)
     return resp
 
 
